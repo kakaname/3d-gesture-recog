@@ -1,73 +1,76 @@
-import glob
-import pathlib
 import cv2
 import mediapipe as mp
+import pyrealsense2 as rs
+import tensorflow as tf
 
-def getData():
-  data_file = open("attempt2_data.txt")
-  data = data_file.read()
-  data = data.split("\n")
+def identity_block(x, filter):
+  # copy tensor to variable called x_skip
+  x_skip = x
+  # Layer 1
+  x = tf.keras.layers.Conv2D(filter, (3,3), padding = 'same')(x)
+  x = tf.keras.layers.BatchNormalization(axis=3)(x)
+  x = tf.keras.layers.Activation('relu')(x)
+  # Layer 2
+  x = tf.keras.layers.Conv2D(filter, (3,3), padding = 'same')(x)
+  x = tf.keras.layers.BatchNormalization(axis=3)(x)
+  # Add Residue
+  x = tf.keras.layers.Add()([x, x_skip])     
+  x = tf.keras.layers.Activation('relu')(x)
+  return x
 
-  for i in range(len(data)):
-    data[i] = data[i].split(",")
-    data[i].pop()
-  data_file.close()
-  return data
+def convolutional_block(x, filter):
+  # copy tensor to variable called x_skip
+  x_skip = x
+  # Layer 1
+  x = tf.keras.layers.Conv2D(filter, (3,3), padding = 'same', strides = (2,2))(x)
+  x = tf.keras.layers.BatchNormalization(axis=3)(x)
+  x = tf.keras.layers.Activation('relu')(x)
+  # Layer 2
+  x = tf.keras.layers.Conv2D(filter, (3,3), padding = 'same')(x)
+  x = tf.keras.layers.BatchNormalization(axis=3)(x)
+  # Processing Residue with conv(1,1)
+  x_skip = tf.keras.layers.Conv2D(filter, (1,1), strides = (2,2))(x_skip)
+  # Add Residue
+  x = tf.keras.layers.Add()([x, x_skip])     
+  x = tf.keras.layers.Activation('relu')(x)
+  return x
+
+def ResNet34(shape = (32, 32, 3), classes = 10):
+  # Step 1 (Setup Input Layer)
+  x_input = tf.keras.layers.Input(shape)
+  x = tf.keras.layers.ZeroPadding2D((3, 3))(x_input)
+  # Step 2 (Initial Conv layer along with maxPool)
+  x = tf.keras.layers.Conv2D(64, kernel_size=7, strides=2, padding='same')(x)
+  x = tf.keras.layers.BatchNormalization()(x)
+  x = tf.keras.layers.Activation('relu')(x)
+  x = tf.keras.layers.MaxPool2D(pool_size=3, strides=2, padding='same')(x)
+  # Define size of sub-blocks and initial filter size
+  block_layers = [3, 4, 6, 3]
+  filter_size = 64
+  # Step 3 Add the Resnet Blocks
+  for i in range(4):
+    if i == 0:
+      # For sub-block 1 Residual/Convolutional block not needed
+      for j in range(block_layers[i]):
+        x = identity_block(x, filter_size)
+    else:
+      # One Residual/Convolutional Block followed by Identity blocks
+      # The filter size will go on increasing by a factor of 2
+      filter_size = filter_size*2
+      x = convolutional_block(x, filter_size)
+      for j in range(block_layers[i] - 1):
+        x = identity_block(x, filter_size)
+  # Step 4 End Dense Network
+  x = tf.keras.layers.AveragePooling2D((2,2), padding = 'same')(x)
+  x = tf.keras.layers.Flatten()(x)
+  x = tf.keras.layers.Dense(512, activation = 'relu')(x)
+  x = tf.keras.layers.Dense(classes, activation = 'softmax')(x)
+  model = tf.keras.models.Model(inputs = x_input, outputs = x, name = "ResNet34")
+  return model
 
 
-mp_drawing = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
-mp_hands = mp.solutions.hands
-
-BATCH_SIZE = 4
-IMG_WIDTH = 480
-IMG_HEIGHT = 640
+def main():
+  model = ResNet34()
 
 
-# For static images:
-IMAGE_FILES = getData()
-print(IMAGE_FILES[0][0])
-
-with mp_hands.Hands(
-    static_image_mode=True,
-    max_num_hands=2,
-    min_detection_confidence=0.5) as hands:
-
-  for i in range(len(IMAGE_FILES)): 
-    for idx, file in enumerate(IMAGE_FILES[i]):
-      print(file)
-      # Read an image, flip it around y-axis for correct handedness output (see
-      # above).
-      image = cv2.flip(cv2.imread(file), 1)
-      # Convert the BGR image to RGB before processing.
-      results = hands.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-
-      # Print handedness and draw hand landmarks on the image.
-      print('Handedness:', results.multi_handedness)
-      if not results.multi_hand_landmarks:
-        continue
-      image_height, image_width, _ = image.shape
-      annotated_image = image.copy()
-      for hand_landmarks in results.multi_hand_landmarks:
-        print('hand_landmarks:', hand_landmarks)
-        print(
-            f'Index finger tip coordinates: (',
-            f'{hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP].x * image_width}, '
-            f'{hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP].y * image_height})'
-        )
-        mp_drawing.draw_landmarks(
-            annotated_image,
-            hand_landmarks,
-            mp_hands.HAND_CONNECTIONS,
-            mp_drawing_styles.get_default_hand_landmarks_style(),
-            mp_drawing_styles.get_default_hand_connections_style())
-      cv2.imwrite(
-          '/tmp/annotated_image' + str(idx) + '.png', cv2.flip(annotated_image, 1))
-      # Draw hand world landmarks.
-      if not results.multi_hand_world_landmarks:
-        continue
-      for hand_world_landmarks in results.multi_hand_world_landmarks:
-        mp_drawing.plot_landmarks(
-          hand_world_landmarks, mp_hands.HAND_CONNECTIONS, azimuth=5)
-
-# For webcam input:
+main()
